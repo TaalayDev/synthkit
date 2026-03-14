@@ -85,8 +85,10 @@ class SynthKitWeb extends SynthKitPlatform {
   Future<String> createSynth(SynthKitSynthOptions options) async {
     await _ensureInitialized();
     final tone = _tone!;
-    final synthCtor = tone.getProperty<JSFunction>('Synth'.toJS);
-    final synth = synthCtor.callAsConstructor<JSObject>(_synthOptions(options));
+    final polySynthCtor = tone.getProperty<JSFunction>('PolySynth'.toJS);
+    final synth = polySynthCtor.callAsConstructor<JSObject>(
+      _polySynthOptions(tone, options),
+    );
 
     final gainCtor = tone.getProperty<JSFunction>('Gain'.toJS);
     final gain = gainCtor.callAsConstructor<JSObject>(options.volume.toJS);
@@ -120,16 +122,9 @@ class SynthKitWeb extends SynthKitPlatform {
     SynthKitSynthOptions options,
   ) async {
     final synth = _requireSynth(synthId);
-    final oscillator = synth.synth.getProperty<JSObject>('oscillator'.toJS);
-    oscillator.setProperty('type'.toJS, options.waveform.wireName.toJS);
-
-    final envelope = synth.synth.getProperty<JSObject>('envelope'.toJS);
-    for (final entry in options.envelope.toToneMap().entries) {
-      envelope.setProperty(
-        entry.key.toJS,
-        (entry.value as num).toDouble().toJS,
-      );
-    }
+    synth.synth.callMethodVarArgs<JSAny?>('set'.toJS, <JSAny?>[
+      _synthOptions(options),
+    ]);
 
     _setGainValue(synth.gain, options.volume);
 
@@ -229,7 +224,7 @@ class SynthKitWeb extends SynthKitPlatform {
     }
     final now = tone.callMethod<JSAny?>('now'.toJS);
     for (final synth in _synths.values) {
-      synth.synth.callMethodVarArgs<JSAny?>('triggerRelease'.toJS, <JSAny?>[
+      synth.synth.callMethodVarArgs<JSAny?>('releaseAll'.toJS, <JSAny?>[
         now,
       ]);
     }
@@ -316,6 +311,13 @@ class SynthKitWeb extends SynthKitPlatform {
     return _newObject()
       ..setProperty('oscillator'.toJS, oscillator)
       ..setProperty('envelope'.toJS, envelope);
+  }
+
+  JSObject _polySynthOptions(JSObject tone, SynthKitSynthOptions options) {
+    return _newObject()
+      ..setProperty('voice'.toJS, tone.getProperty<JSFunction>('Synth'.toJS))
+      ..setProperty('options'.toJS, _synthOptions(options))
+      ..setProperty('maxPolyphony'.toJS, 16.toJS);
   }
 
   JSObject _newObject() {
