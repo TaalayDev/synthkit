@@ -15,3 +15,7 @@ Initial release of `synthkit`.
 ## 0.0.2
 
 - Small bug fixes and improvements.
+
+## 0.0.3
+
+- Fixed polyphonic synthesis on web platform.
