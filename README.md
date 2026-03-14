@@ -3,6 +3,9 @@
 `synthkit` is a synth-first Flutter plugin for musical note playback and
 simple beat-based scheduling across Flutter platforms.
 
+> Note: Windows and Linux backends are implemented, but they have not been
+> runtime-tested in this workspace yet.
+
 It gives you one Dart API for:
 
 - creating synths
@@ -23,7 +26,7 @@ interfaces.
 | macOS | Yes | Native `AVAudioEngine` synth |
 | Android | Yes | Native `AudioTrack` synth |
 | Windows | Yes | Native `waveOut` synth |
-| Linux | No | Not implemented |
+| Linux | Yes | Native ALSA synth |
 
 ## Features
 
@@ -53,6 +56,12 @@ flutter pub get
 
 No extra platform setup is required for the current supported platforms beyond
 normal Flutter plugin integration.
+
+For Linux builds, install ALSA development headers first. On Debian or Ubuntu:
+
+```bash
+sudo apt install libasound2-dev
+```
 
 ## Quick start
 
@@ -144,7 +153,7 @@ Important members:
   Sets the global output volume from `0.0` to `1.0`.
 - `backendName`
   Returns a backend identifier such as `tonejs-web`, `native-ios`,
-  `native-macos`, `native-android`, or `native-windows`.
+  `native-macos`, `native-android`, `native-linux`, or `native-windows`.
 - `transport`
   Beat-based scheduler for short sequences.
 - `dispose()`
@@ -377,6 +386,11 @@ Important web note:
 - Uses a native `waveOut` backend.
 - Best suited to simple synthesis and note triggering.
 
+### Linux
+
+- Uses a native ALSA PCM playback backend.
+- Requires ALSA development headers when building the Linux app or example.
+
 ### Backend differences
 
 The public Dart API is shared, but exact sound character can vary by backend.
@@ -401,7 +415,6 @@ This is expected because each platform uses its own underlying audio engine.
 - recording or offline rendering
 - effect chains beyond a simple low-pass filter
 - looped transport playback
-- Linux support
 
 ## Example app
 

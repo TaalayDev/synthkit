@@ -8,6 +8,6 @@ Initial release of `synthkit`.
 - Added synth configuration with waveform selection, ADSR envelope, per-note
   velocity, and optional low-pass filtering.
 - Added beat-based transport scheduling for short musical patterns from Dart.
-- Added platform backends for web, iOS, macOS, Android, and Windows.
+- Added platform backends for web, iOS, macOS, Android, Linux, and Windows.
 - Added automatic Tone.js integration for web and native audio backends for
-  Apple, Android, and Windows platforms.
+  Apple, Android, Linux, and Windows platforms.

@@ -38,6 +38,8 @@ flutter:
         pluginClass: SynthKitPlugin
       macos:
         pluginClass: SynthKitPlugin
+      linux:
+        pluginClass: SynthKitPlugin
       windows:
         pluginClass: SynthKitPluginCApi
       web:
