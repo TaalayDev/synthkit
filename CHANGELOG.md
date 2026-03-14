@@ -11,3 +11,7 @@ Initial release of `synthkit`.
 - Added platform backends for web, iOS, macOS, Android, Linux, and Windows.
 - Added automatic Tone.js integration for web and native audio backends for
   Apple, Android, Linux, and Windows platforms.
+
+## 0.0.2
+
+- Small bug fixes and improvements.
