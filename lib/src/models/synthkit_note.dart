@@ -34,13 +34,13 @@ class SynthKitNote {
 
   factory SynthKitNote.parse(String input) {
     final match = RegExp(
-      r'^([A-Ga-g])([#b]?)(-?\d+)$',
+      r'^([A-Ga-g])([#bB]?)(-?\d+)$',
     ).firstMatch(input.trim());
     if (match == null) {
       throw FormatException('Invalid note name: $input');
     }
     final note = match.group(1)!.toUpperCase();
-    final accidental = match.group(2)!;
+    final accidental = match.group(2)!.toUpperCase();
     final octave = int.parse(match.group(3)!);
     final semitone = switch ('$note$accidental') {
       'C' => 0,

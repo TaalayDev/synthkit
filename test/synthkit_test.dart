@@ -121,6 +121,14 @@ void main() {
     },
   );
 
+  test('SynthKitNote.parse accepts flat notes even if fully uppercased', () {
+    final flatNote = SynthKitNote.parse('Bb5');
+    final uppercasedFlatNote = SynthKitNote.parse('BB5');
+
+    expect(uppercasedFlatNote.midi, flatNote.midi);
+    expect(uppercasedFlatNote.frequencyHz, closeTo(flatNote.frequencyHz, 0.001));
+  });
+
   test('transport schedules notes in beat time', () async {
     final fakePlatform = FakeSynthKitPlatform();
     final fakeClock = FakeClock();
