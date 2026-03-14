@@ -1,0 +1,38 @@
+name: synthkit
+description: "Cross-platform Flutter synth plugin for note playback, envelopes, filters, and beat scheduling."
+version: 0.0.1
+homepage: https://github.com/TaalayDev/synthkit
+
+environment:
+  sdk: ^3.11.0
+  flutter: '>=3.3.0'
+
+dependencies:
+  flutter:
+    sdk: flutter
+  flutter_web_plugins:
+    sdk: flutter
+  web: ^1.0.0
+  plugin_platform_interface: ^2.0.2
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^6.0.0
+
+flutter:
+
+  plugin:
+    platforms:
+      android:
+        package: com.example.synthkit
+        pluginClass: SynthKitPlugin
+      ios:
+        pluginClass: SynthKitPlugin
+      macos:
+        pluginClass: SynthKitPlugin
+      windows:
+        pluginClass: SynthKitPluginCApi
+      web:
+        pluginClass: SynthKitWeb
+        fileName: synthkit_web.dart
