@@ -17,6 +17,8 @@ The API is intentionally small. It is designed for metronomes, ear-training
 apps, music toys, UI sound prototypes, and lightweight sequencer-style
 interfaces.
 
+Hosted example: [taalaydev.github.io/synthkit](https://taalaydev.github.io/synthkit/)
+
 ## Platform support
 
 | Platform | Supported | Backend |
@@ -426,6 +428,9 @@ The package includes a runnable Flutter example in
 - playing a one-shot note
 - scheduling a short beat-based pattern
 - stopping playback
+
+You can also try the hosted web example here:
+[taalaydev.github.io/synthkit](https://taalaydev.github.io/synthkit/)
 
 Run it with:
 
