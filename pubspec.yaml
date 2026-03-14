@@ -1,7 +1,7 @@
 name: synthkit
 description: "Cross-platform Flutter synth plugin for note playback, envelopes, filters, and beat scheduling."
-version: 0.0.3
-homepage: https://github.com/TaalayDev/synthkit
+version: 0.0.4
+homepage: https://taalaydev.github.io/synthkit/
 repository: https://github.com/TaalayDev/synthkit
 topics:
   - audio

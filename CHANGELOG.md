@@ -19,3 +19,8 @@ Initial release of `synthkit`.
 ## 0.0.3
 
 - Fixed polyphonic synthesis on web platform.
+
+## 0.0.4
+
+- Added a new example app with a complete synth interface.
+- Changed the homepage to https://taalaydev.github.io/synthkit/
