@@ -29,7 +29,6 @@ class LinuxSynthKitEngine;
 
 struct _SynthKitPlugin {
   GObject parent_instance;
-  LinuxSynthKitEngine* engine;
 };
 
 G_DEFINE_TYPE(SynthKitPlugin, synth_kit_plugin, g_object_get_type())
@@ -255,6 +254,34 @@ FlValue* RequireMap(FlValue* value, const char* message) {
 std::runtime_error AlsaError(const std::string& context, int code) {
   return std::runtime_error(
       context + ": " + std::string(snd_strerror(code)));
+}
+
+SynthSpec FfiParseSynthSpec(int waveform, double volume, int attack_ms,
+                            int decay_ms, double sustain, int release_ms,
+                            int filter_enabled, double cutoff_hz) {
+  SynthSpec spec;
+  switch (waveform) {
+    case 1:
+      spec.waveform = "square";
+      break;
+    case 2:
+      spec.waveform = "triangle";
+      break;
+    case 3:
+      spec.waveform = "sawtooth";
+      break;
+    default:
+      spec.waveform = "sine";
+      break;
+  }
+  spec.volume = volume;
+  spec.envelope.attack_ms = attack_ms;
+  spec.envelope.decay_ms = decay_ms;
+  spec.envelope.sustain = sustain;
+  spec.envelope.release_ms = release_ms;
+  spec.filter.enabled = filter_enabled != 0;
+  spec.filter.cutoff_hz = cutoff_hz;
+  return spec;
 }
 
 class LinuxSynthKitEngine {
@@ -547,109 +574,90 @@ class LinuxSynthKitEngine {
   std::vector<Voice> voices_;
 };
 
-FlMethodResponse* SuccessResponse() {
-  return FL_METHOD_RESPONSE(fl_method_success_response_new(nullptr));
-}
+thread_local std::string g_ffi_last_error;
 
-FlMethodResponse* StringResponse(const char* value) {
-  g_autoptr(FlValue) result = fl_value_new_string(value);
-  return FL_METHOD_RESPONSE(fl_method_success_response_new(result));
-}
+void SetFfiLastError(const std::string& message) { g_ffi_last_error = message; }
 
-FlMethodResponse* ErrorResponse(const std::string& message) {
-  return FL_METHOD_RESPONSE(
-      fl_method_error_response_new("synthkit/error", message.c_str(), nullptr));
-}
-
-FlMethodResponse* HandleMethodCall(SynthKitPlugin* self,
-                                   FlMethodCall* method_call) {
+template <typename Callback>
+int32_t WrapFfiCall(Callback&& callback) {
   try {
-    const gchar* method = fl_method_call_get_name(method_call);
-    FlValue* args = fl_method_call_get_args(method_call);
-
-    if (strcmp(method, "getBackendName") == 0) {
-      return StringResponse("native-linux");
-    }
-
-    if (strcmp(method, "initialize") == 0) {
-      self->engine->Initialize(GetDouble(
-          RequireMap(args, "Expected an argument map."), "masterVolume", 0.8));
-      return SuccessResponse();
-    }
-
-    if (strcmp(method, "disposeEngine") == 0) {
-      self->engine->Dispose();
-      return SuccessResponse();
-    }
-
-    if (strcmp(method, "setMasterVolume") == 0) {
-      self->engine->SetMasterVolume(GetDouble(
-          RequireMap(args, "Expected an argument map."), "volume", 0.8));
-      return SuccessResponse();
-    }
-
-    if (strcmp(method, "createSynth") == 0) {
-      args = RequireMap(args, "Expected a synth config map.");
-      const std::string synth_id =
-          self->engine->CreateSynth(ParseSynthSpec(args));
-      g_autoptr(FlValue) result = fl_value_new_string(synth_id.c_str());
-      return FL_METHOD_RESPONSE(fl_method_success_response_new(result));
-    }
-
-    if (strcmp(method, "updateSynth") == 0) {
-      args = RequireMap(args, "Expected a synth config map.");
-      self->engine->UpdateSynth(RequireString(args, "synthId"),
-                                ParseSynthSpec(args));
-      return SuccessResponse();
-    }
-
-    if (strcmp(method, "triggerNote") == 0) {
-      args = RequireMap(args, "Expected a trigger note map.");
-      self->engine->TriggerNote(RequireString(args, "synthId"),
-                                GetDouble(args, "frequencyHz", 440.0),
-                                GetInt(args, "durationMs", 500),
-                                GetDouble(args, "velocity", 1.0),
-                                GetInt(args, "delayMs", 0));
-      return SuccessResponse();
-    }
-
-    if (strcmp(method, "cancelScheduledNotes") == 0) {
-      if (args != nullptr && fl_value_get_type(args) == FL_VALUE_TYPE_MAP) {
-        self->engine->CancelScheduledNotes(GetString(args, "synthId"));
-      } else {
-        self->engine->CancelScheduledNotes(std::nullopt);
-      }
-      return SuccessResponse();
-    }
-
-    if (strcmp(method, "panic") == 0) {
-      self->engine->Panic();
-      return SuccessResponse();
-    }
-
-    if (strcmp(method, "disposeSynth") == 0) {
-      args = RequireMap(args, "Expected a synth id map.");
-      self->engine->DisposeSynth(RequireString(args, "synthId"));
-      return SuccessResponse();
-    }
-
-    return FL_METHOD_RESPONSE(fl_method_not_implemented_response_new());
+    callback();
+    g_ffi_last_error.clear();
+    return 1;
   } catch (const std::exception& error) {
-    return ErrorResponse(error.what());
+    SetFfiLastError(error.what());
+    return 0;
+  } catch (...) {
+    SetFfiLastError("Unknown FFI error.");
+    return 0;
   }
 }
 
-static void synth_kit_plugin_handle_method_call(SynthKitPlugin* self,
-                                                FlMethodCall* method_call) {
-  g_autoptr(FlMethodResponse) response = HandleMethodCall(self, method_call);
-  fl_method_call_respond(method_call, response, nullptr);
+class LinuxFfiBridge {
+ public:
+  int32_t CreateSynth(const SynthSpec& spec) {
+    const std::string synth_id = engine_.CreateSynth(spec);
+    const int32_t handle = next_handle_++;
+    synth_ids_[handle] = synth_id;
+    return handle;
+  }
+
+  void UpdateSynth(int32_t synth_handle, const SynthSpec& spec) {
+    engine_.UpdateSynth(RequireSynthId(synth_handle), spec);
+  }
+
+  void TriggerNote(int32_t synth_handle, double frequency_hz, int duration_ms,
+                   double velocity, int delay_ms) {
+    engine_.TriggerNote(RequireSynthId(synth_handle), frequency_hz, duration_ms,
+                        velocity, delay_ms);
+  }
+
+  void CancelScheduledNotes(int32_t synth_handle) {
+    if (synth_handle < 0) {
+      engine_.CancelScheduledNotes(std::nullopt);
+      return;
+    }
+    engine_.CancelScheduledNotes(RequireSynthId(synth_handle));
+  }
+
+  void DisposeSynth(int32_t synth_handle) {
+    const std::string synth_id = RequireSynthId(synth_handle);
+    engine_.DisposeSynth(synth_id);
+    synth_ids_.erase(synth_handle);
+  }
+
+  void DisposeEngine() {
+    engine_.Dispose();
+    synth_ids_.clear();
+  }
+
+  void Panic() { engine_.Panic(); }
+
+  void Initialize(double master_volume) { engine_.Initialize(master_volume); }
+
+  void SetMasterVolume(double volume) { engine_.SetMasterVolume(volume); }
+
+ private:
+  std::string RequireSynthId(int32_t synth_handle) const {
+    const auto it = synth_ids_.find(synth_handle);
+    if (it == synth_ids_.end()) {
+      throw std::runtime_error("Unknown ffi synth handle: " +
+                               std::to_string(synth_handle));
+    }
+    return it->second;
+  }
+
+  LinuxSynthKitEngine engine_;
+  int32_t next_handle_ = 1;
+  std::unordered_map<int32_t, std::string> synth_ids_;
+};
+
+LinuxFfiBridge& GetFfiBridge() {
+  static LinuxFfiBridge bridge;
+  return bridge;
 }
 
 static void synth_kit_plugin_dispose(GObject* object) {
-  SynthKitPlugin* self = SYNTHKIT_PLUGIN(object);
-  delete self->engine;
-  self->engine = nullptr;
-
   G_OBJECT_CLASS(synth_kit_plugin_parent_class)->dispose(object);
 }
 
@@ -657,27 +665,89 @@ static void synth_kit_plugin_class_init(SynthKitPluginClass* klass) {
   G_OBJECT_CLASS(klass)->dispose = synth_kit_plugin_dispose;
 }
 
-static void synth_kit_plugin_init(SynthKitPlugin* self) {
-  self->engine = new LinuxSynthKitEngine();
-}
-
-static void method_call_cb(FlMethodChannel* channel, FlMethodCall* method_call,
-                           gpointer user_data) {
-  SynthKitPlugin* plugin = SYNTHKIT_PLUGIN(user_data);
-  synth_kit_plugin_handle_method_call(plugin, method_call);
-}
+static void synth_kit_plugin_init(SynthKitPlugin* self) {}
 
 void synth_kit_plugin_register_with_registrar(FlPluginRegistrar* registrar) {
   SynthKitPlugin* plugin = SYNTHKIT_PLUGIN(
       g_object_new(synth_kit_plugin_get_type(), nullptr));
-
-  g_autoptr(FlStandardMethodCodec) codec = fl_standard_method_codec_new();
-  g_autoptr(FlMethodChannel) channel = fl_method_channel_new(
-      fl_plugin_registrar_get_messenger(registrar), "synthkit",
-      FL_METHOD_CODEC(codec));
-  fl_method_channel_set_method_call_handler(channel, method_call_cb,
-                                            g_object_ref(plugin),
-                                            g_object_unref);
-
   g_object_unref(plugin);
+}
+
+extern "C" {
+
+__attribute__((visibility("default"))) int32_t synthkit_ffi_is_supported() {
+  return 1;
+}
+
+__attribute__((visibility("default"))) int32_t synthkit_ffi_get_backend_name() {
+  SetFfiLastError("ffi-linux");
+  return 1;
+}
+
+__attribute__((visibility("default"))) const char* synthkit_ffi_last_error_message() {
+  return g_ffi_last_error.c_str();
+}
+
+__attribute__((visibility("default"))) int32_t synthkit_ffi_initialize(
+    double master_volume) {
+  return WrapFfiCall([&]() { GetFfiBridge().Initialize(master_volume); });
+}
+
+__attribute__((visibility("default"))) void synthkit_ffi_dispose_engine() {
+  GetFfiBridge().DisposeEngine();
+}
+
+__attribute__((visibility("default"))) int32_t synthkit_ffi_set_master_volume(
+    double volume) {
+  return WrapFfiCall([&]() { GetFfiBridge().SetMasterVolume(volume); });
+}
+
+__attribute__((visibility("default"))) int32_t synthkit_ffi_create_synth(
+    int32_t waveform, double volume, int32_t attack_ms, int32_t decay_ms,
+    double sustain, int32_t release_ms, int32_t filter_enabled,
+    double cutoff_hz) {
+  int32_t synth_handle = 0;
+  const auto spec = FfiParseSynthSpec(waveform, volume, attack_ms, decay_ms,
+                                      sustain, release_ms, filter_enabled,
+                                      cutoff_hz);
+  const int32_t status =
+      WrapFfiCall([&]() { synth_handle = GetFfiBridge().CreateSynth(spec); });
+  return status == 1 ? synth_handle : 0;
+}
+
+__attribute__((visibility("default"))) int32_t synthkit_ffi_update_synth(
+    int32_t synth_handle, int32_t waveform, double volume, int32_t attack_ms,
+    int32_t decay_ms, double sustain, int32_t release_ms,
+    int32_t filter_enabled, double cutoff_hz) {
+  const auto spec = FfiParseSynthSpec(waveform, volume, attack_ms, decay_ms,
+                                      sustain, release_ms, filter_enabled,
+                                      cutoff_hz);
+  return WrapFfiCall(
+      [&]() { GetFfiBridge().UpdateSynth(synth_handle, spec); });
+}
+
+__attribute__((visibility("default"))) int32_t synthkit_ffi_trigger_note(
+    int32_t synth_handle, double frequency_hz, int32_t duration_ms,
+    double velocity, int32_t delay_ms) {
+  return WrapFfiCall([&]() {
+    GetFfiBridge().TriggerNote(synth_handle, frequency_hz, duration_ms,
+                               velocity, delay_ms);
+  });
+}
+
+__attribute__((visibility("default"))) int32_t
+synthkit_ffi_cancel_scheduled_notes(int32_t synth_handle) {
+  return WrapFfiCall(
+      [&]() { GetFfiBridge().CancelScheduledNotes(synth_handle); });
+}
+
+__attribute__((visibility("default"))) int32_t synthkit_ffi_panic() {
+  return WrapFfiCall([&]() { GetFfiBridge().Panic(); });
+}
+
+__attribute__((visibility("default"))) int32_t synthkit_ffi_dispose_synth(
+    int32_t synth_handle) {
+  return WrapFfiCall([&]() { GetFfiBridge().DisposeSynth(synth_handle); });
+}
+
 }

@@ -87,6 +87,7 @@ class _RootState extends State<_Root> {
       }
       await fn();
     } catch (e) {
+      print(e);
       _setStatus('Error: $e');
     } finally {
       if (mounted) setState(() => _busy = false);

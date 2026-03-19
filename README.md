@@ -3,9 +3,6 @@
 `synthkit` is a synth-first Flutter plugin for musical note playback and
 simple beat-based scheduling across Flutter platforms.
 
-> Note: Windows and Linux backends are implemented, but they have not been
-> runtime-tested in this workspace yet.
-
 It gives you one Dart API for:
 
 - creating synths
@@ -24,11 +21,11 @@ Hosted example: [taalaydev.github.io/synthkit](https://taalaydev.github.io/synth
 | Platform | Supported | Backend |
 | --- | --- | --- |
 | Web | Yes | Tone.js loaded at runtime |
-| iOS | Yes | Native `AVAudioEngine` synth |
-| macOS | Yes | Native `AVAudioEngine` synth |
-| Android | Yes | Native `AudioTrack` synth |
-| Windows | Yes | Native `waveOut` synth |
-| Linux | Yes | Native ALSA synth |
+| iOS | Yes | `FFI` + native `AVAudioEngine` synth |
+| macOS | Yes | `FFI` + native `AVAudioEngine` synth |
+| Android | Yes | `FFI` + native `AudioTrack` synth |
+| Windows | Yes | `FFI` + native `waveOut` synth |
+| Linux | Yes | `FFI` + native ALSA synth |
 
 ## Features
 
@@ -39,7 +36,7 @@ Hosted example: [taalaydev.github.io/synthkit](https://taalaydev.github.io/synth
 - Per-note velocity and delayed triggering.
 - Beat-based transport for scheduling note sequences from Dart.
 - Automatic Tone.js bootstrap on web.
-- Native backends for mobile and desktop.
+- `FFI` native backends for mobile and desktop.
 
 ## Installation
 
@@ -47,7 +44,7 @@ Add the package to your app:
 
 ```yaml
 dependencies:
-  synthkit: ^0.0.1
+  synthkit: ^0.1.0
 ```
 
 Then install dependencies:
@@ -56,14 +53,23 @@ Then install dependencies:
 flutter pub get
 ```
 
-No extra platform setup is required for the current supported platforms beyond
+No extra platform setup is required for iOS, macOS, Windows, or web beyond
 normal Flutter plugin integration.
+
+Android builds now include a native `FFI` library via the Android NDK.
+Make sure your Android toolchain can build CMake-based native targets.
 
 For Linux builds, install ALSA development headers first. On Debian or Ubuntu:
 
 ```bash
 sudo apt install libasound2-dev
 ```
+
+When debugging backend selection, `synthkit` logs the chosen transport once at
+startup:
+
+- `[synthkit] transport: FFI`
+- `[synthkit] transport: MethodChannel`
 
 ## Quick start
 
@@ -154,8 +160,8 @@ Important members:
 - `setMasterVolume(double volume)`
   Sets the global output volume from `0.0` to `1.0`.
 - `backendName`
-  Returns a backend identifier such as `tonejs-web`, `native-ios`,
-  `native-macos`, `native-android`, `native-linux`, or `native-windows`.
+  Returns a backend identifier such as `tonejs-web`, `ffi-ios`,
+  `ffi-macos`, `ffi-android`, `ffi-linux`, or `ffi-windows`.
 - `transport`
   Beat-based scheduler for short sequences.
 - `dispose()`

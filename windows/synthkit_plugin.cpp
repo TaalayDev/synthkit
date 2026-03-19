@@ -4,8 +4,6 @@
 #include <mmsystem.h>
 
 #include <flutter/plugin_registrar_windows.h>
-#include <flutter/standard_method_codec.h>
-
 #include <algorithm>
 #include <array>
 #include <chrono>
@@ -26,9 +24,6 @@
 namespace synthkit {
 
 namespace {
-
-using flutter::EncodableMap;
-using flutter::EncodableValue;
 
 constexpr int kSampleRate = 44100;
 constexpr int kChannels = 2;
@@ -159,93 +154,32 @@ struct ScheduledNote {
   std::chrono::steady_clock::time_point due_at;
 };
 
-const EncodableMap* GetMap(const EncodableMap& map, const char* key) {
-  auto it = map.find(EncodableValue(key));
-  if (it == map.end()) {
-    return nullptr;
-  }
-  return std::get_if<EncodableMap>(&it->second);
-}
-
-std::optional<std::string> GetString(const EncodableMap& map, const char* key) {
-  auto it = map.find(EncodableValue(key));
-  if (it == map.end()) {
-    return std::nullopt;
-  }
-  if (const auto* value = std::get_if<std::string>(&it->second)) {
-    return *value;
-  }
-  return std::nullopt;
-}
-
-double GetDouble(const EncodableMap& map, const char* key, double fallback) {
-  auto it = map.find(EncodableValue(key));
-  if (it == map.end()) {
-    return fallback;
-  }
-  if (const auto* value = std::get_if<double>(&it->second)) {
-    return *value;
-  }
-  if (const auto* value = std::get_if<int32_t>(&it->second)) {
-    return static_cast<double>(*value);
-  }
-  if (const auto* value = std::get_if<int64_t>(&it->second)) {
-    return static_cast<double>(*value);
-  }
-  return fallback;
-}
-
-int GetInt(const EncodableMap& map, const char* key, int fallback) {
-  auto it = map.find(EncodableValue(key));
-  if (it == map.end()) {
-    return fallback;
-  }
-  if (const auto* value = std::get_if<int32_t>(&it->second)) {
-    return *value;
-  }
-  if (const auto* value = std::get_if<int64_t>(&it->second)) {
-    return static_cast<int>(*value);
-  }
-  if (const auto* value = std::get_if<double>(&it->second)) {
-    return static_cast<int>(*value);
-  }
-  return fallback;
-}
-
-bool GetBool(const EncodableMap& map, const char* key, bool fallback) {
-  auto it = map.find(EncodableValue(key));
-  if (it == map.end()) {
-    return fallback;
-  }
-  if (const auto* value = std::get_if<bool>(&it->second)) {
-    return *value;
-  }
-  return fallback;
-}
-
-SynthSpec ParseSynthSpec(const EncodableMap& args) {
+SynthSpec FfiParseSynthSpec(int waveform, double volume, int attack_ms,
+                            int decay_ms, double sustain, int release_ms,
+                            int filter_enabled, double cutoff_hz) {
   SynthSpec spec;
-  spec.waveform = GetString(args, "waveform").value_or("sine");
-  spec.volume = GetDouble(args, "volume", 0.8);
-  if (const auto* envelope = GetMap(args, "envelope")) {
-    spec.envelope.attack_ms = GetInt(*envelope, "attackMs", 10);
-    spec.envelope.decay_ms = GetInt(*envelope, "decayMs", 120);
-    spec.envelope.sustain = GetDouble(*envelope, "sustain", 0.75);
-    spec.envelope.release_ms = GetInt(*envelope, "releaseMs", 240);
+  switch (waveform) {
+    case 1:
+      spec.waveform = "square";
+      break;
+    case 2:
+      spec.waveform = "triangle";
+      break;
+    case 3:
+      spec.waveform = "sawtooth";
+      break;
+    default:
+      spec.waveform = "sine";
+      break;
   }
-  if (const auto* filter = GetMap(args, "filter")) {
-    spec.filter.enabled = GetBool(*filter, "enabled", false);
-    spec.filter.cutoff_hz = GetDouble(*filter, "cutoffHz", 1800.0);
-  }
+  spec.volume = volume;
+  spec.envelope.attack_ms = attack_ms;
+  spec.envelope.decay_ms = decay_ms;
+  spec.envelope.sustain = sustain;
+  spec.envelope.release_ms = release_ms;
+  spec.filter.enabled = filter_enabled != 0;
+  spec.filter.cutoff_hz = cutoff_hz;
   return spec;
-}
-
-std::string RequireString(const EncodableMap& map, const char* key) {
-  const auto value = GetString(map, key);
-  if (!value.has_value() || value->empty()) {
-    throw std::runtime_error(std::string("Missing ") + key + ".");
-  }
-  return *value;
 }
 
 }  // namespace
@@ -514,124 +448,184 @@ class WindowsSynthKitEngine {
   std::vector<Voice> voices_;
 };
 
-// static
-void SynthKitPlugin::RegisterWithRegistrar(
-    flutter::PluginRegistrarWindows *registrar) {
-  auto channel =
-      std::make_unique<flutter::MethodChannel<flutter::EncodableValue>>(
-          registrar->messenger(), "synthkit",
-          &flutter::StandardMethodCodec::GetInstance());
+namespace {
 
-  auto plugin = std::make_unique<SynthKitPlugin>();
+thread_local std::string g_ffi_last_error;
 
-  channel->SetMethodCallHandler(
-      [plugin_pointer = plugin.get()](const auto &call, auto result) {
-        plugin_pointer->HandleMethodCall(call, std::move(result));
-      });
+void SetFfiLastError(const std::string& message) { g_ffi_last_error = message; }
 
-  registrar->AddPlugin(std::move(plugin));
-}
-
-SynthKitPlugin::SynthKitPlugin()
-    : engine_(std::make_unique<WindowsSynthKitEngine>()) {}
-
-SynthKitPlugin::~SynthKitPlugin() = default;
-
-void SynthKitPlugin::HandleMethodCall(
-    const flutter::MethodCall<flutter::EncodableValue> &method_call,
-    std::unique_ptr<flutter::MethodResult<flutter::EncodableValue>> result) {
+template <typename Callback>
+int32_t WrapFfiCall(Callback&& callback) {
   try {
-    const auto* args = std::get_if<EncodableMap>(method_call.arguments());
-
-    if (method_call.method_name() == "getBackendName") {
-      result->Success(EncodableValue("native-windows"));
-      return;
-    }
-
-    if (method_call.method_name() == "initialize") {
-      if (args == nullptr) {
-        throw std::runtime_error("Expected an argument map.");
-      }
-      engine_->Initialize(GetDouble(*args, "masterVolume", 0.8));
-      result->Success();
-      return;
-    }
-
-    if (method_call.method_name() == "disposeEngine") {
-      engine_->Dispose();
-      result->Success();
-      return;
-    }
-
-    if (method_call.method_name() == "setMasterVolume") {
-      if (args == nullptr) {
-        throw std::runtime_error("Expected an argument map.");
-      }
-      engine_->SetMasterVolume(GetDouble(*args, "volume", 0.8));
-      result->Success();
-      return;
-    }
-
-    if (method_call.method_name() == "createSynth") {
-      if (args == nullptr) {
-        throw std::runtime_error("Expected a synth config map.");
-      }
-      result->Success(EncodableValue(engine_->CreateSynth(ParseSynthSpec(*args))));
-      return;
-    }
-
-    if (method_call.method_name() == "updateSynth") {
-      if (args == nullptr) {
-        throw std::runtime_error("Expected a synth config map.");
-      }
-      engine_->UpdateSynth(RequireString(*args, "synthId"),
-                           ParseSynthSpec(*args));
-      result->Success();
-      return;
-    }
-
-    if (method_call.method_name() == "triggerNote") {
-      if (args == nullptr) {
-        throw std::runtime_error("Expected a trigger note map.");
-      }
-      engine_->TriggerNote(RequireString(*args, "synthId"),
-                           GetDouble(*args, "frequencyHz", 440.0),
-                           GetInt(*args, "durationMs", 500),
-                           GetDouble(*args, "velocity", 1.0),
-                           GetInt(*args, "delayMs", 0));
-      result->Success();
-      return;
-    }
-
-    if (method_call.method_name() == "cancelScheduledNotes") {
-      if (args != nullptr) {
-        engine_->CancelScheduledNotes(GetString(*args, "synthId"));
-      } else {
-        engine_->CancelScheduledNotes(std::nullopt);
-      }
-      result->Success();
-      return;
-    }
-
-    if (method_call.method_name() == "panic") {
-      engine_->Panic();
-      result->Success();
-      return;
-    }
-
-    if (method_call.method_name() == "disposeSynth") {
-      if (args == nullptr) {
-        throw std::runtime_error("Expected a synth id map.");
-      }
-      engine_->DisposeSynth(RequireString(*args, "synthId"));
-      result->Success();
-      return;
-    }
-
-    result->NotImplemented();
+    callback();
+    g_ffi_last_error.clear();
+    return 1;
   } catch (const std::exception& error) {
-    result->Error("synthkit/error", error.what());
+    SetFfiLastError(error.what());
+    return 0;
+  } catch (...) {
+    SetFfiLastError("Unknown FFI error.");
+    return 0;
   }
 }
 
+class WindowsFfiBridge {
+ public:
+  int32_t CreateSynth(const SynthSpec& spec) {
+    const std::string synth_id = engine_.CreateSynth(spec);
+    const int32_t handle = next_handle_++;
+    synth_ids_[handle] = synth_id;
+    return handle;
+  }
+
+  void UpdateSynth(int32_t synth_handle, const SynthSpec& spec) {
+    engine_.UpdateSynth(RequireSynthId(synth_handle), spec);
+  }
+
+  void TriggerNote(int32_t synth_handle, double frequency_hz, int duration_ms,
+                   double velocity, int delay_ms) {
+    engine_.TriggerNote(RequireSynthId(synth_handle), frequency_hz, duration_ms,
+                        velocity, delay_ms);
+  }
+
+  void CancelScheduledNotes(int32_t synth_handle) {
+    if (synth_handle < 0) {
+      engine_.CancelScheduledNotes(std::nullopt);
+      return;
+    }
+    engine_.CancelScheduledNotes(RequireSynthId(synth_handle));
+  }
+
+  void DisposeSynth(int32_t synth_handle) {
+    const std::string synth_id = RequireSynthId(synth_handle);
+    engine_.DisposeSynth(synth_id);
+    synth_ids_.erase(synth_handle);
+  }
+
+  void DisposeEngine() {
+    engine_.Dispose();
+    synth_ids_.clear();
+  }
+
+  void Panic() { engine_.Panic(); }
+
+  void Initialize(double master_volume) { engine_.Initialize(master_volume); }
+
+  void SetMasterVolume(double volume) { engine_.SetMasterVolume(volume); }
+
+ private:
+  std::string RequireSynthId(int32_t synth_handle) const {
+    const auto it = synth_ids_.find(synth_handle);
+    if (it == synth_ids_.end()) {
+      throw std::runtime_error("Unknown ffi synth handle: " +
+                               std::to_string(synth_handle));
+    }
+    return it->second;
+  }
+
+  WindowsSynthKitEngine engine_;
+  int32_t next_handle_ = 1;
+  std::unordered_map<int32_t, std::string> synth_ids_;
+};
+
+WindowsFfiBridge& GetFfiBridge() {
+  static WindowsFfiBridge bridge;
+  return bridge;
+}
+
+}  // namespace
+
+// static
+void SynthKitPlugin::RegisterWithRegistrar(
+    flutter::PluginRegistrarWindows *registrar) {
+  auto plugin = std::make_unique<SynthKitPlugin>();
+  registrar->AddPlugin(std::move(plugin));
+}
+
+SynthKitPlugin::SynthKitPlugin() = default;
+
+SynthKitPlugin::~SynthKitPlugin() = default;
+
 }  // namespace synthkit
+
+extern "C" {
+
+__declspec(dllexport) int32_t synthkit_ffi_is_supported() { return 1; }
+
+__declspec(dllexport) int32_t synthkit_ffi_get_backend_name() {
+  synthkit::SetFfiLastError("ffi-windows");
+  return 1;
+}
+
+__declspec(dllexport) const char* synthkit_ffi_last_error_message() {
+  return synthkit::g_ffi_last_error.c_str();
+}
+
+__declspec(dllexport) int32_t synthkit_ffi_initialize(double master_volume) {
+  return synthkit::WrapFfiCall(
+      [&]() { synthkit::GetFfiBridge().Initialize(master_volume); });
+}
+
+__declspec(dllexport) void synthkit_ffi_dispose_engine() {
+  synthkit::GetFfiBridge().DisposeEngine();
+}
+
+__declspec(dllexport) int32_t synthkit_ffi_set_master_volume(double volume) {
+  return synthkit::WrapFfiCall(
+      [&]() { synthkit::GetFfiBridge().SetMasterVolume(volume); });
+}
+
+__declspec(dllexport) int32_t synthkit_ffi_create_synth(
+    int32_t waveform, double volume, int32_t attack_ms, int32_t decay_ms,
+    double sustain, int32_t release_ms, int32_t filter_enabled,
+    double cutoff_hz) {
+  int32_t synth_handle = 0;
+  const auto spec = synthkit::FfiParseSynthSpec(
+      waveform, volume, attack_ms, decay_ms, sustain, release_ms,
+      filter_enabled, cutoff_hz);
+  const int32_t status = synthkit::WrapFfiCall([&]() {
+    synth_handle = synthkit::GetFfiBridge().CreateSynth(spec);
+  });
+  return status == 1 ? synth_handle : 0;
+}
+
+__declspec(dllexport) int32_t synthkit_ffi_update_synth(
+    int32_t synth_handle, int32_t waveform, double volume, int32_t attack_ms,
+    int32_t decay_ms, double sustain, int32_t release_ms,
+    int32_t filter_enabled, double cutoff_hz) {
+  const auto spec = synthkit::FfiParseSynthSpec(
+      waveform, volume, attack_ms, decay_ms, sustain, release_ms,
+      filter_enabled, cutoff_hz);
+  return synthkit::WrapFfiCall([&]() {
+    synthkit::GetFfiBridge().UpdateSynth(synth_handle, spec);
+  });
+}
+
+__declspec(dllexport) int32_t synthkit_ffi_trigger_note(
+    int32_t synth_handle, double frequency_hz, int32_t duration_ms,
+    double velocity, int32_t delay_ms) {
+  return synthkit::WrapFfiCall([&]() {
+    synthkit::GetFfiBridge().TriggerNote(synth_handle, frequency_hz,
+                                         duration_ms, velocity, delay_ms);
+  });
+}
+
+__declspec(dllexport) int32_t synthkit_ffi_cancel_scheduled_notes(
+    int32_t synth_handle) {
+  return synthkit::WrapFfiCall([&]() {
+    synthkit::GetFfiBridge().CancelScheduledNotes(synth_handle);
+  });
+}
+
+__declspec(dllexport) int32_t synthkit_ffi_panic() {
+  return synthkit::WrapFfiCall([&]() { synthkit::GetFfiBridge().Panic(); });
+}
+
+__declspec(dllexport) int32_t synthkit_ffi_dispose_synth(
+    int32_t synth_handle) {
+  return synthkit::WrapFfiCall([&]() {
+    synthkit::GetFfiBridge().DisposeSynth(synth_handle);
+  });
+}
+
+}

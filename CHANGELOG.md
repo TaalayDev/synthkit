@@ -1,3 +1,13 @@
+## 0.1.0
+
+- Migrated iOS, macOS, Android, Linux, and Windows native backends to `FFI`.
+- Removed old native `MethodChannel` implementations on iOS, macOS, Android,
+  Linux, and Windows.
+- Added native `FFI` bootstrap for Android via `libsynthkit_android.so`.
+- Removed unused `AudioKit` dependency from iOS and macOS podspecs.
+- Added transport selection debug logging to help confirm `FFI` vs web backend
+  usage at runtime.
+
 ## 0.0.1
 
 Initial release of `synthkit`.
@@ -24,3 +34,7 @@ Initial release of `synthkit`.
 
 - Added a new example app with a complete synth interface.
 - Changed the homepage to https://taalaydev.github.io/synthkit/
+
+## 0.0.5
+
+- Added the initial shared `FFI` integration scaffolding and native bindings.

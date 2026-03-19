@@ -1,35 +1,14 @@
 PODS:
-  - AudioKit (5.1.0):
-    - AudioKit/C (= 5.1.0)
-    - AudioKit/Core (= 5.1.0)
-    - AudioKit/Soundpipe (= 5.1.0)
-    - AudioKit/Sporth (= 5.1.0)
-    - AudioKit/STK (= 5.1.0)
-  - AudioKit/C (5.1.0):
-    - AudioKit/Soundpipe
-    - AudioKit/Sporth
-    - AudioKit/STK
-  - AudioKit/Core (5.1.0):
-    - AudioKit/C
-  - AudioKit/Soundpipe (5.1.0)
-  - AudioKit/Sporth (5.1.0):
-    - AudioKit/Soundpipe
-  - AudioKit/STK (5.1.0)
   - Flutter (1.0.0)
   - integration_test (0.0.1):
     - Flutter
   - synthkit (0.0.1):
-    - AudioKit (~> 5.1)
     - Flutter
 
 DEPENDENCIES:
   - Flutter (from `Flutter`)
   - integration_test (from `.symlinks/plugins/integration_test/ios`)
   - synthkit (from `.symlinks/plugins/synthkit/ios`)
-
-SPEC REPOS:
-  trunk:
-    - AudioKit
 
 EXTERNAL SOURCES:
   Flutter:
@@ -40,10 +19,9 @@ EXTERNAL SOURCES:
     :path: ".symlinks/plugins/synthkit/ios"
 
 SPEC CHECKSUMS:
-  AudioKit: 81246a4ccdd7ca3c6e0076f913070e90987b4369
   Flutter: cabc95a1d2626b1b06e7179b784ebcf0c0cde467
   integration_test: 4a889634ef21a45d28d50d622cf412dc6d9f586e
-  synthkit: 11a636df4735838384f5b5e7ec405e9c926c0a10
+  synthkit: 1f66e52d0fc833e38d392e1a669fdb44b6b58898
 
 PODFILE CHECKSUM: e590a28e595ce7d4b4f7c1b6dac9fe16b5c43a0c
 

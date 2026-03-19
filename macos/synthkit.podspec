@@ -24,7 +24,6 @@ Cross-platform Flutter synth plugin for note playback, envelopes, filters, and b
   # s.resource_bundles = {'synthkit_privacy' => ['Resources/PrivacyInfo.xcprivacy']}
 
   s.dependency 'FlutterMacOS'
-  s.dependency 'AudioKit', '~> 5.1'
 
   s.platform = :osx, '10.15'
   s.pod_target_xcconfig = { 'DEFINES_MODULE' => 'YES' }

@@ -53,6 +53,12 @@ android {
         minSdk = 24
     }
 
+    externalNativeBuild {
+        cmake {
+            path = file("src/main/cpp/CMakeLists.txt")
+        }
+    }
+
     testOptions {
         unitTests {
             isIncludeAndroidResources = true

@@ -16,7 +16,6 @@ Cross-platform Flutter synth plugin for note playback, envelopes, filters, and b
   s.source_files = 'Classes/**/*'
   s.static_framework = true
   s.dependency 'Flutter'
-  s.dependency 'AudioKit', '~> 5.1'
   s.platform = :ios, '13.0'
 
   # Flutter.framework does not contain a i386 slice.

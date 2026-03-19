@@ -4,108 +4,7 @@ import UIKit
 
 @available(iOS 13.0, *)
 public class SynthKitPlugin: NSObject, FlutterPlugin {
-  private let engine = AppleSynthKitEngine()
-
   public static func register(with registrar: FlutterPluginRegistrar) {
-    let channel = FlutterMethodChannel(name: "synthkit", binaryMessenger: registrar.messenger())
-    let instance = SynthKitPlugin()
-    registrar.addMethodCallDelegate(instance, channel: channel)
-  }
-
-  public func handle(_ call: FlutterMethodCall, result: @escaping FlutterResult) {
-    do {
-      switch call.method {
-      case "getBackendName":
-        result("native-ios")
-      case "initialize":
-        let args = try Self.arguments(call.arguments)
-        try engine.initialize(masterVolume: Self.doubleValue(args["masterVolume"], fallback: 0.8))
-        result(nil)
-      case "disposeEngine":
-        engine.disposeEngine()
-        result(nil)
-      case "setMasterVolume":
-        let args = try Self.arguments(call.arguments)
-        engine.setMasterVolume(Self.doubleValue(args["volume"], fallback: 0.8))
-        result(nil)
-      case "createSynth":
-        let args = try Self.arguments(call.arguments)
-        let synthId = try engine.createSynth(spec: try AppleSynthSpec(args: args))
-        result(synthId)
-      case "updateSynth":
-        let args = try Self.arguments(call.arguments)
-        let synthId = try Self.stringValue(args["synthId"], key: "synthId")
-        try engine.updateSynth(id: synthId, spec: try AppleSynthSpec(args: args))
-        result(nil)
-      case "triggerNote":
-        let args = try Self.arguments(call.arguments)
-        let synthId = try Self.stringValue(args["synthId"], key: "synthId")
-        try engine.triggerNote(
-          synthId: synthId,
-          frequencyHz: Self.doubleValue(args["frequencyHz"], fallback: 440),
-          durationMs: Self.intValue(args["durationMs"], fallback: 500),
-          velocity: Self.doubleValue(args["velocity"], fallback: 1),
-          delayMs: Self.intValue(args["delayMs"], fallback: 0)
-        )
-        result(nil)
-      case "cancelScheduledNotes":
-        let args = (call.arguments as? [String: Any]) ?? [:]
-        engine.cancelScheduledNotes(synthId: args["synthId"] as? String)
-        result(nil)
-      case "panic":
-        engine.panic()
-        result(nil)
-      case "disposeSynth":
-        let args = try Self.arguments(call.arguments)
-        let synthId = try Self.stringValue(args["synthId"], key: "synthId")
-        engine.disposeSynth(id: synthId)
-        result(nil)
-      default:
-        result(FlutterMethodNotImplemented)
-      }
-    } catch {
-      result(
-        FlutterError(
-          code: "synthkit/error",
-          message: error.localizedDescription,
-          details: nil
-        )
-      )
-    }
-  }
-
-  private static func arguments(_ raw: Any?) throws -> [String: Any] {
-    guard let args = raw as? [String: Any] else {
-      throw SynthKitError.invalidArguments("Expected a method argument map.")
-    }
-    return args
-  }
-
-  private static func stringValue(_ raw: Any?, key: String) throws -> String {
-    guard let value = raw as? String, !value.isEmpty else {
-      throw SynthKitError.invalidArguments("Missing \(key).")
-    }
-    return value
-  }
-
-  private static func doubleValue(_ raw: Any?, fallback: Double) -> Double {
-    if let value = raw as? Double {
-      return value
-    }
-    if let value = raw as? NSNumber {
-      return value.doubleValue
-    }
-    return fallback
-  }
-
-  private static func intValue(_ raw: Any?, fallback: Int) -> Int {
-    if let value = raw as? Int {
-      return value
-    }
-    if let value = raw as? NSNumber {
-      return value.intValue
-    }
-    return fallback
   }
 }
 
@@ -660,4 +559,349 @@ private enum SynthKitNumeric {
 
 private func clampUnit(_ value: Double) -> Double {
   max(0, min(1, value))
+}
+
+@available(iOS 13.0, *)
+private final class AppleFfiBridge {
+  private let engine = AppleSynthKitEngine()
+  private var synthIds: [Int32: String] = [:]
+  private var nextHandle: Int32 = 1
+
+  func initialize(masterVolume: Double) throws {
+    try engine.initialize(masterVolume: masterVolume)
+  }
+
+  func disposeEngine() {
+    engine.disposeEngine()
+    synthIds.removeAll()
+  }
+
+  func setMasterVolume(_ volume: Double) {
+    engine.setMasterVolume(volume)
+  }
+
+  func createSynth(spec: AppleSynthSpec) throws -> Int32 {
+    let synthId = try engine.createSynth(spec: spec)
+    let handle = nextHandle
+    nextHandle += 1
+    synthIds[handle] = synthId
+    return handle
+  }
+
+  func updateSynth(handle: Int32, spec: AppleSynthSpec) throws {
+    try engine.updateSynth(id: try requireSynthId(handle), spec: spec)
+  }
+
+  func triggerNote(
+    handle: Int32,
+    frequencyHz: Double,
+    durationMs: Int,
+    velocity: Double,
+    delayMs: Int
+  ) throws {
+    try engine.triggerNote(
+      synthId: try requireSynthId(handle),
+      frequencyHz: frequencyHz,
+      durationMs: durationMs,
+      velocity: velocity,
+      delayMs: delayMs
+    )
+  }
+
+  func cancelScheduledNotes(handle: Int32) throws {
+    if handle < 0 {
+      engine.cancelScheduledNotes(synthId: nil)
+      return
+    }
+    engine.cancelScheduledNotes(synthId: try requireSynthId(handle))
+  }
+
+  func panic() {
+    engine.panic()
+  }
+
+  func disposeSynth(handle: Int32) throws {
+    let synthId = try requireSynthId(handle)
+    engine.disposeSynth(id: synthId)
+    synthIds.removeValue(forKey: handle)
+  }
+
+  private func requireSynthId(_ handle: Int32) throws -> String {
+    guard let synthId = synthIds[handle] else {
+      throw SynthKitError.unknownSynth("ffi_handle_\(handle)")
+    }
+    return synthId
+  }
+}
+
+@available(iOS 13.0, *)
+private enum AppleFfiBridgeHolder {
+  static let shared = AppleFfiBridge()
+}
+
+private var appleFfiLastErrorStorage: UnsafeMutablePointer<CChar>?
+
+private func setAppleFfiLastError(_ message: String) {
+  if let storage = appleFfiLastErrorStorage {
+    free(storage)
+  }
+  appleFfiLastErrorStorage = strdup(message)
+}
+
+private func clearAppleFfiLastError() {
+  setAppleFfiLastError("")
+}
+
+private func withAppleFfiResult(_ body: () throws -> Int32) -> Int32 {
+  do {
+    let result = try body()
+    clearAppleFfiLastError()
+    return result
+  } catch {
+    setAppleFfiLastError(error.localizedDescription)
+    return 0
+  }
+}
+
+private func appleFfiSpec(
+  waveform: Int32,
+  volume: Double,
+  attackMs: Int32,
+  decayMs: Int32,
+  sustain: Double,
+  releaseMs: Int32,
+  filterEnabled: Int32,
+  cutoffHz: Double
+) -> AppleSynthSpec {
+  let waveformName: String
+  switch waveform {
+  case 1:
+    waveformName = "square"
+  case 2:
+    waveformName = "triangle"
+  case 3:
+    waveformName = "sawtooth"
+  default:
+    waveformName = "sine"
+  }
+
+  return AppleSynthSpec(
+    waveform: waveformName,
+    volume: volume,
+    envelope: AppleEnvelopeSpec(
+      attackSeconds: Double(attackMs) / 1000,
+      decaySeconds: Double(decayMs) / 1000,
+      sustain: sustain,
+      releaseSeconds: Double(releaseMs) / 1000
+    ),
+    filter: AppleFilterSpec(
+      enabled: filterEnabled != 0,
+      cutoffHz: cutoffHz
+    )
+  )
+}
+
+extension AppleSynthSpec {
+  init(
+    waveform: String,
+    volume: Double,
+    envelope: AppleEnvelopeSpec,
+    filter: AppleFilterSpec
+  ) {
+    self.waveform = waveform
+    self.volume = volume
+    self.envelope = envelope
+    self.filter = filter
+  }
+}
+
+extension AppleEnvelopeSpec {
+  init(attackSeconds: Double, decaySeconds: Double, sustain: Double, releaseSeconds: Double) {
+    self.attackSeconds = attackSeconds
+    self.decaySeconds = decaySeconds
+    self.sustain = sustain
+    self.releaseSeconds = releaseSeconds
+  }
+}
+
+extension AppleFilterSpec {
+  init(enabled: Bool, cutoffHz: Double) {
+    self.enabled = enabled
+    self.cutoffHz = cutoffHz
+  }
+}
+
+@_cdecl("synthkit_ffi_is_supported")
+public func synthkit_ffi_is_supported() -> Int32 {
+  if #available(iOS 13.0, *) {
+    return 1
+  }
+  return 0
+}
+
+@_cdecl("synthkit_ffi_get_backend_name")
+public func synthkit_ffi_get_backend_name() -> Int32 {
+  setAppleFfiLastError("ffi-ios")
+  return 1
+}
+
+@_cdecl("synthkit_ffi_last_error_message")
+public func synthkit_ffi_last_error_message() -> UnsafePointer<CChar>? {
+  UnsafePointer(appleFfiLastErrorStorage)
+}
+
+@_cdecl("synthkit_ffi_initialize")
+public func synthkit_ffi_initialize(_ masterVolume: Double) -> Int32 {
+  withAppleFfiResult {
+    guard #available(iOS 13.0, *) else {
+      throw SynthKitError.engineFailure("FFI backend is unavailable on this iOS version.")
+    }
+    let bridge = AppleFfiBridgeHolder.shared
+    try bridge.initialize(masterVolume: masterVolume)
+    return 1
+  }
+}
+
+@_cdecl("synthkit_ffi_dispose_engine")
+public func synthkit_ffi_dispose_engine() {
+  if #available(iOS 13.0, *) {
+    AppleFfiBridgeHolder.shared.disposeEngine()
+  }
+}
+
+@_cdecl("synthkit_ffi_set_master_volume")
+public func synthkit_ffi_set_master_volume(_ volume: Double) -> Int32 {
+  withAppleFfiResult {
+    guard #available(iOS 13.0, *) else {
+      throw SynthKitError.engineFailure("FFI backend is unavailable on this iOS version.")
+    }
+    let bridge = AppleFfiBridgeHolder.shared
+    bridge.setMasterVolume(volume)
+    return 1
+  }
+}
+
+@_cdecl("synthkit_ffi_create_synth")
+public func synthkit_ffi_create_synth(
+  _ waveform: Int32,
+  _ volume: Double,
+  _ attackMs: Int32,
+  _ decayMs: Int32,
+  _ sustain: Double,
+  _ releaseMs: Int32,
+  _ filterEnabled: Int32,
+  _ cutoffHz: Double
+) -> Int32 {
+  withAppleFfiResult {
+    guard #available(iOS 13.0, *) else {
+      throw SynthKitError.engineFailure("FFI backend is unavailable on this iOS version.")
+    }
+    let bridge = AppleFfiBridgeHolder.shared
+    return try bridge.createSynth(
+      spec: appleFfiSpec(
+        waveform: waveform,
+        volume: volume,
+        attackMs: attackMs,
+        decayMs: decayMs,
+        sustain: sustain,
+        releaseMs: releaseMs,
+        filterEnabled: filterEnabled,
+        cutoffHz: cutoffHz
+      )
+    )
+  }
+}
+
+@_cdecl("synthkit_ffi_update_synth")
+public func synthkit_ffi_update_synth(
+  _ synthHandle: Int32,
+  _ waveform: Int32,
+  _ volume: Double,
+  _ attackMs: Int32,
+  _ decayMs: Int32,
+  _ sustain: Double,
+  _ releaseMs: Int32,
+  _ filterEnabled: Int32,
+  _ cutoffHz: Double
+) -> Int32 {
+  withAppleFfiResult {
+    guard #available(iOS 13.0, *) else {
+      throw SynthKitError.engineFailure("FFI backend is unavailable on this iOS version.")
+    }
+    let bridge = AppleFfiBridgeHolder.shared
+    try bridge.updateSynth(
+      handle: synthHandle,
+      spec: appleFfiSpec(
+        waveform: waveform,
+        volume: volume,
+        attackMs: attackMs,
+        decayMs: decayMs,
+        sustain: sustain,
+        releaseMs: releaseMs,
+        filterEnabled: filterEnabled,
+        cutoffHz: cutoffHz
+      )
+    )
+    return 1
+  }
+}
+
+@_cdecl("synthkit_ffi_trigger_note")
+public func synthkit_ffi_trigger_note(
+  _ synthHandle: Int32,
+  _ frequencyHz: Double,
+  _ durationMs: Int32,
+  _ velocity: Double,
+  _ delayMs: Int32
+) -> Int32 {
+  withAppleFfiResult {
+    guard #available(iOS 13.0, *) else {
+      throw SynthKitError.engineFailure("FFI backend is unavailable on this iOS version.")
+    }
+    let bridge = AppleFfiBridgeHolder.shared
+    try bridge.triggerNote(
+      handle: synthHandle,
+      frequencyHz: frequencyHz,
+      durationMs: Int(durationMs),
+      velocity: velocity,
+      delayMs: Int(delayMs)
+    )
+    return 1
+  }
+}
+
+@_cdecl("synthkit_ffi_cancel_scheduled_notes")
+public func synthkit_ffi_cancel_scheduled_notes(_ synthHandle: Int32) -> Int32 {
+  withAppleFfiResult {
+    guard #available(iOS 13.0, *) else {
+      throw SynthKitError.engineFailure("FFI backend is unavailable on this iOS version.")
+    }
+    let bridge = AppleFfiBridgeHolder.shared
+    try bridge.cancelScheduledNotes(handle: synthHandle)
+    return 1
+  }
+}
+
+@_cdecl("synthkit_ffi_panic")
+public func synthkit_ffi_panic() -> Int32 {
+  withAppleFfiResult {
+    guard #available(iOS 13.0, *) else {
+      throw SynthKitError.engineFailure("FFI backend is unavailable on this iOS version.")
+    }
+    let bridge = AppleFfiBridgeHolder.shared
+    bridge.panic()
+    return 1
+  }
+}
+
+@_cdecl("synthkit_ffi_dispose_synth")
+public func synthkit_ffi_dispose_synth(_ synthHandle: Int32) -> Int32 {
+  withAppleFfiResult {
+    guard #available(iOS 13.0, *) else {
+      throw SynthKitError.engineFailure("FFI backend is unavailable on this iOS version.")
+    }
+    let bridge = AppleFfiBridgeHolder.shared
+    try bridge.disposeSynth(handle: synthHandle)
+    return 1
+  }
 }

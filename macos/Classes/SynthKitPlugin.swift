@@ -3,107 +3,7 @@ import Cocoa
 import FlutterMacOS
 
 public class SynthKitPlugin: NSObject, FlutterPlugin {
-  private let engine = MacSynthKitEngine()
-
   public static func register(with registrar: FlutterPluginRegistrar) {
-    let channel = FlutterMethodChannel(name: "synthkit", binaryMessenger: registrar.messenger)
-    let instance = SynthKitPlugin()
-    registrar.addMethodCallDelegate(instance, channel: channel)
-  }
-
-  public func handle(_ call: FlutterMethodCall, result: @escaping FlutterResult) {
-    do {
-      switch call.method {
-      case "getBackendName":
-        result("native-macos")
-      case "initialize":
-        let args = try Self.arguments(call.arguments)
-        try engine.initialize(masterVolume: Self.doubleValue(args["masterVolume"], fallback: 0.8))
-        result(nil)
-      case "disposeEngine":
-        engine.disposeEngine()
-        result(nil)
-      case "setMasterVolume":
-        let args = try Self.arguments(call.arguments)
-        engine.setMasterVolume(Self.doubleValue(args["volume"], fallback: 0.8))
-        result(nil)
-      case "createSynth":
-        let args = try Self.arguments(call.arguments)
-        result(try engine.createSynth(spec: try MacSynthSpec(args: args)))
-      case "updateSynth":
-        let args = try Self.arguments(call.arguments)
-        let synthId = try Self.stringValue(args["synthId"], key: "synthId")
-        try engine.updateSynth(id: synthId, spec: try MacSynthSpec(args: args))
-        result(nil)
-      case "triggerNote":
-        let args = try Self.arguments(call.arguments)
-        let synthId = try Self.stringValue(args["synthId"], key: "synthId")
-        try engine.triggerNote(
-          synthId: synthId,
-          frequencyHz: Self.doubleValue(args["frequencyHz"], fallback: 440),
-          durationMs: Self.intValue(args["durationMs"], fallback: 500),
-          velocity: Self.doubleValue(args["velocity"], fallback: 1),
-          delayMs: Self.intValue(args["delayMs"], fallback: 0)
-        )
-        result(nil)
-      case "cancelScheduledNotes":
-        let args = (call.arguments as? [String: Any]) ?? [:]
-        engine.cancelScheduledNotes(synthId: args["synthId"] as? String)
-        result(nil)
-      case "panic":
-        engine.panic()
-        result(nil)
-      case "disposeSynth":
-        let args = try Self.arguments(call.arguments)
-        let synthId = try Self.stringValue(args["synthId"], key: "synthId")
-        engine.disposeSynth(id: synthId)
-        result(nil)
-      default:
-        result(FlutterMethodNotImplemented)
-      }
-    } catch {
-      result(
-        FlutterError(
-          code: "synthkit/error",
-          message: error.localizedDescription,
-          details: nil
-        )
-      )
-    }
-  }
-
-  private static func arguments(_ raw: Any?) throws -> [String: Any] {
-    guard let args = raw as? [String: Any] else {
-      throw MacSynthKitError.invalidArguments("Expected a method argument map.")
-    }
-    return args
-  }
-
-  private static func stringValue(_ raw: Any?, key: String) throws -> String {
-    guard let value = raw as? String, !value.isEmpty else {
-      throw MacSynthKitError.invalidArguments("Missing \(key).")
-    }
-    return value
-  }
-
-  private static func doubleValue(_ raw: Any?, fallback: Double) -> Double {
-    if let value = raw as? Double {
-      return value
-    }
-    if let value = raw as? NSNumber {
-      return value.doubleValue
-    }
-    return fallback
-  }
-
-  private static func intValue(_ raw: Any?, fallback: Int) -> Int {
-    if let value = raw as? Int {
-      return value
-    }
-    if let value = raw as? NSNumber {
-      return value.intValue
-    }
-    return fallback
   }
 }
 
@@ -649,4 +549,307 @@ private enum MacSynthKitNumeric {
 
 private func clampUnit(_ value: Double) -> Double {
   max(0, min(1, value))
+}
+
+private final class MacFfiBridge {
+  private let engine = MacSynthKitEngine()
+  private var synthIds: [Int32: String] = [:]
+  private var nextHandle: Int32 = 1
+
+  func initialize(masterVolume: Double) throws {
+    try engine.initialize(masterVolume: masterVolume)
+  }
+
+  func disposeEngine() {
+    engine.disposeEngine()
+    synthIds.removeAll()
+  }
+
+  func setMasterVolume(_ volume: Double) {
+    engine.setMasterVolume(volume)
+  }
+
+  func createSynth(spec: MacSynthSpec) throws -> Int32 {
+    let synthId = try engine.createSynth(spec: spec)
+    let handle = nextHandle
+    nextHandle += 1
+    synthIds[handle] = synthId
+    return handle
+  }
+
+  func updateSynth(handle: Int32, spec: MacSynthSpec) throws {
+    try engine.updateSynth(id: try requireSynthId(handle), spec: spec)
+  }
+
+  func triggerNote(
+    handle: Int32,
+    frequencyHz: Double,
+    durationMs: Int,
+    velocity: Double,
+    delayMs: Int
+  ) throws {
+    try engine.triggerNote(
+      synthId: try requireSynthId(handle),
+      frequencyHz: frequencyHz,
+      durationMs: durationMs,
+      velocity: velocity,
+      delayMs: delayMs
+    )
+  }
+
+  func cancelScheduledNotes(handle: Int32) throws {
+    if handle < 0 {
+      engine.cancelScheduledNotes(synthId: nil)
+      return
+    }
+    engine.cancelScheduledNotes(synthId: try requireSynthId(handle))
+  }
+
+  func panic() {
+    engine.panic()
+  }
+
+  func disposeSynth(handle: Int32) throws {
+    let synthId = try requireSynthId(handle)
+    engine.disposeSynth(id: synthId)
+    synthIds.removeValue(forKey: handle)
+  }
+
+  private func requireSynthId(_ handle: Int32) throws -> String {
+    guard let synthId = synthIds[handle] else {
+      throw MacSynthKitError.unknownSynth("ffi_handle_\(handle)")
+    }
+    return synthId
+  }
+}
+
+private let macFfiBridge = MacFfiBridge()
+private var macFfiLastErrorStorage: UnsafeMutablePointer<CChar>?
+
+private func setMacFfiLastError(_ message: String) {
+  if let storage = macFfiLastErrorStorage {
+    free(storage)
+  }
+  macFfiLastErrorStorage = strdup(message)
+}
+
+private func clearMacFfiLastError() {
+  setMacFfiLastError("")
+}
+
+private func withMacFfiResult(_ body: () throws -> Int32) -> Int32 {
+  do {
+    let result = try body()
+    clearMacFfiLastError()
+    return result
+  } catch {
+    setMacFfiLastError(error.localizedDescription)
+    return 0
+  }
+}
+
+private func macFfiSpec(
+  waveform: Int32,
+  volume: Double,
+  attackMs: Int32,
+  decayMs: Int32,
+  sustain: Double,
+  releaseMs: Int32,
+  filterEnabled: Int32,
+  cutoffHz: Double
+) -> MacSynthSpec {
+  let waveformName: String
+  switch waveform {
+  case 1:
+    waveformName = "square"
+  case 2:
+    waveformName = "triangle"
+  case 3:
+    waveformName = "sawtooth"
+  default:
+    waveformName = "sine"
+  }
+
+  return MacSynthSpec(
+    waveform: waveformName,
+    volume: volume,
+    envelope: MacEnvelopeSpec(
+      attackSeconds: Double(attackMs) / 1000,
+      decaySeconds: Double(decayMs) / 1000,
+      sustain: sustain,
+      releaseSeconds: Double(releaseMs) / 1000
+    ),
+    filter: MacFilterSpec(
+      enabled: filterEnabled != 0,
+      cutoffHz: cutoffHz
+    )
+  )
+}
+
+extension MacSynthSpec {
+  init(
+    waveform: String,
+    volume: Double,
+    envelope: MacEnvelopeSpec,
+    filter: MacFilterSpec
+  ) {
+    self.waveform = waveform
+    self.volume = volume
+    self.envelope = envelope
+    self.filter = filter
+  }
+}
+
+extension MacEnvelopeSpec {
+  init(attackSeconds: Double, decaySeconds: Double, sustain: Double, releaseSeconds: Double) {
+    self.attackSeconds = attackSeconds
+    self.decaySeconds = decaySeconds
+    self.sustain = sustain
+    self.releaseSeconds = releaseSeconds
+  }
+}
+
+extension MacFilterSpec {
+  init(enabled: Bool, cutoffHz: Double) {
+    self.enabled = enabled
+    self.cutoffHz = cutoffHz
+  }
+}
+
+@_cdecl("synthkit_ffi_is_supported")
+public func synthkit_ffi_is_supported() -> Int32 {
+  1
+}
+
+@_cdecl("synthkit_ffi_get_backend_name")
+public func synthkit_ffi_get_backend_name() -> Int32 {
+  setMacFfiLastError("ffi-macos")
+  return 1
+}
+
+@_cdecl("synthkit_ffi_last_error_message")
+public func synthkit_ffi_last_error_message() -> UnsafePointer<CChar>? {
+  UnsafePointer(macFfiLastErrorStorage)
+}
+
+@_cdecl("synthkit_ffi_initialize")
+public func synthkit_ffi_initialize(_ masterVolume: Double) -> Int32 {
+  withMacFfiResult {
+    try macFfiBridge.initialize(masterVolume: masterVolume)
+    return 1
+  }
+}
+
+@_cdecl("synthkit_ffi_dispose_engine")
+public func synthkit_ffi_dispose_engine() {
+  macFfiBridge.disposeEngine()
+}
+
+@_cdecl("synthkit_ffi_set_master_volume")
+public func synthkit_ffi_set_master_volume(_ volume: Double) -> Int32 {
+  withMacFfiResult {
+    macFfiBridge.setMasterVolume(volume)
+    return 1
+  }
+}
+
+@_cdecl("synthkit_ffi_create_synth")
+public func synthkit_ffi_create_synth(
+  _ waveform: Int32,
+  _ volume: Double,
+  _ attackMs: Int32,
+  _ decayMs: Int32,
+  _ sustain: Double,
+  _ releaseMs: Int32,
+  _ filterEnabled: Int32,
+  _ cutoffHz: Double
+) -> Int32 {
+  withMacFfiResult {
+    try macFfiBridge.createSynth(
+      spec: macFfiSpec(
+        waveform: waveform,
+        volume: volume,
+        attackMs: attackMs,
+        decayMs: decayMs,
+        sustain: sustain,
+        releaseMs: releaseMs,
+        filterEnabled: filterEnabled,
+        cutoffHz: cutoffHz
+      )
+    )
+  }
+}
+
+@_cdecl("synthkit_ffi_update_synth")
+public func synthkit_ffi_update_synth(
+  _ synthHandle: Int32,
+  _ waveform: Int32,
+  _ volume: Double,
+  _ attackMs: Int32,
+  _ decayMs: Int32,
+  _ sustain: Double,
+  _ releaseMs: Int32,
+  _ filterEnabled: Int32,
+  _ cutoffHz: Double
+) -> Int32 {
+  withMacFfiResult {
+    try macFfiBridge.updateSynth(
+      handle: synthHandle,
+      spec: macFfiSpec(
+        waveform: waveform,
+        volume: volume,
+        attackMs: attackMs,
+        decayMs: decayMs,
+        sustain: sustain,
+        releaseMs: releaseMs,
+        filterEnabled: filterEnabled,
+        cutoffHz: cutoffHz
+      )
+    )
+    return 1
+  }
+}
+
+@_cdecl("synthkit_ffi_trigger_note")
+public func synthkit_ffi_trigger_note(
+  _ synthHandle: Int32,
+  _ frequencyHz: Double,
+  _ durationMs: Int32,
+  _ velocity: Double,
+  _ delayMs: Int32
+) -> Int32 {
+  withMacFfiResult {
+    try macFfiBridge.triggerNote(
+      handle: synthHandle,
+      frequencyHz: frequencyHz,
+      durationMs: Int(durationMs),
+      velocity: velocity,
+      delayMs: Int(delayMs)
+    )
+    return 1
+  }
+}
+
+@_cdecl("synthkit_ffi_cancel_scheduled_notes")
+public func synthkit_ffi_cancel_scheduled_notes(_ synthHandle: Int32) -> Int32 {
+  withMacFfiResult {
+    try macFfiBridge.cancelScheduledNotes(handle: synthHandle)
+    return 1
+  }
+}
+
+@_cdecl("synthkit_ffi_panic")
+public func synthkit_ffi_panic() -> Int32 {
+  withMacFfiResult {
+    macFfiBridge.panic()
+    return 1
+  }
+}
+
+@_cdecl("synthkit_ffi_dispose_synth")
+public func synthkit_ffi_dispose_synth(_ synthHandle: Int32) -> Int32 {
+  withMacFfiResult {
+    try macFfiBridge.disposeSynth(handle: synthHandle)
+    return 1
+  }
 }
